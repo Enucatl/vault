@@ -59,7 +59,7 @@ Puppet::Type.type(:vault_cert).provide(:vault_cert) do
         cert_group: cert_group,
         cert_mode: cert_mode,
         cert: cert,
-        info_cert: [cert_info['data']['certificate'], cert_info['data']['issuing_ca']].join("\n"),
+        info_cert: [cert_info['data']['certificate'], cert_info['data']['ca_chain'].join("\n")].join("\n"),
         # Private Key
         key_file: cert_info['key_file'],
         key_owner: key_owner,
