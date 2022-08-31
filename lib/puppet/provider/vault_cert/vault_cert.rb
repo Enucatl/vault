@@ -319,7 +319,7 @@ Puppet::Type.type(:vault_cert).provide(:vault_cert) do
       # These will be flushed to disk later if the is (@property_hash)
       # does not match the should (@resource)
       @property_flush[:ca_chain] = response['ca_chain'].join("\n")
-      @property_flush[:cert] = [response['data']['certificate'], response['data']['ca_chain'].join("\n")].join("\n")
+      @property_flush[:cert] = [response['certificate'], response['ca_chain'].join("\n")].join("\n")
       @property_flush[:key] = response['private_key']
     else
       flush_file_attributes(info_file, :info_owner, :info_group, :info_mode)
