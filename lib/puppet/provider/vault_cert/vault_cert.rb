@@ -122,8 +122,29 @@ Puppet::Type.type(:vault_cert).provide(:vault_cert) do
   end
 
   def self.chown_file(file, owner, group)
-    uid = owner ? Etc.getpwnam(owner).uid : nil
-    gid = group ? Etc.getgrnam(group).gid : nil
+    if owner
+      begin
+        # Attempt to retrieve the user's UID by looking up the username
+        uid = Etc.getpwnam(owner)
+      rescue TypeError
+        # If there's a TypeError, it means owner is not a string, so assume it's already a UID
+        uid = owner
+      end
+    else
+      # If owner is not provided, set uid to nil
+      uid = nil
+    end
+    if group
+      # same logic for group
+      begin
+        gid = Etc.getgrnam(group)
+      rescue TypeError
+        gid = group
+      end
+    else
+      gid = nil
+    end
+    # Use File.chown to change the ownership of the file if both uid and gid are not nil
     File.chown(uid, gid, file) unless uid.nil? && gid.nil?
   end
 
