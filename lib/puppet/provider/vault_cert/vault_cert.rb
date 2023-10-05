@@ -125,7 +125,7 @@ Puppet::Type.type(:vault_cert).provide(:vault_cert) do
     if owner
       begin
         # Attempt to retrieve the user's UID by looking up the username
-        uid = Etc.getpwnam(owner)
+        uid = Etc.getpwnam(owner).uid
       rescue TypeError
         # If there's a TypeError, it means owner is not a string, so assume it's already a UID
         uid = owner
@@ -137,7 +137,7 @@ Puppet::Type.type(:vault_cert).provide(:vault_cert) do
     if group
       # same logic for group
       begin
-        gid = Etc.getgrnam(group)
+        gid = Etc.getgrnam(group).gid
       rescue TypeError
         gid = group
       end
