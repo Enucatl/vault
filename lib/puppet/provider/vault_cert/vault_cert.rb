@@ -112,8 +112,17 @@ Puppet::Type.type(:vault_cert).provide(:vault_cert) do
     if file && File.exist?(file)
       content = File.read(file)
       stat = File::Stat.new(file)
-      owner = Etc.getpwuid(stat.uid).name
-      group = Etc.getgrgid(stat.gid).name
+      # If the user does not exist, just use the uid/gid as provided
+      begin
+        owner = Etc.getpwuid(stat.uid).name
+      rescue ArgumentError
+        owner = stat.uid
+      end
+      begin
+        group = Etc.getgrgid(stat.gid).name
+      rescue ArgumentError
+        group = stat.gid
+      end
       mode = '%04o' % (stat.mode & 0o7777)
       [content, owner, group, mode]
     else
