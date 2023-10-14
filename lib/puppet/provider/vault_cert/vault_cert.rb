@@ -326,12 +326,12 @@ Puppet::Type.type(:vault_cert).provide(:vault_cert) do
       response['private_key'] = "#{response['private_key']}\n"
 
       info = JSON.generate({
-                             data: response,
+        data: response,
         cert_data: @resource[:cert_data],
         cert_chain_file: @resource[:cert_chain_file],
         cert_file: @resource[:cert_file],
         key_file: @resource[:key_file],
-                           })
+      })
       File.write(info_file, info)
       @property_flush[:info_mode] = @resource[:info_mode]
       flush_file_attributes(info_file, :info_owner, :info_group, :info_mode, true)
