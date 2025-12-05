@@ -49,7 +49,7 @@ class VaultSession
                  end
       http.use_ssl = true
       http.ssl_version = :TLSv1_2
-      http.ca_file = get_ca_file(ca_trust)
+      http.cert_store = get_cert_store(ca_trust)
       http.verify_mode = OpenSSL::SSL::VERIFY_PEER
     elsif @uri.scheme == 'https'
       http.use_ssl = true
@@ -204,5 +204,31 @@ class VaultSession
               end
     raise Puppet::Error, 'Failed to get the trusted CA certificate file.' if ca_file.nil?
     ca_file
+  end
+
+  def get_cert_store(ca_trust)
+    # @summary Initialize an X509 Store and load the trusted CA file
+    # @param [String] ca_trust The path to a trusted certificate authority file.
+    # @return [OpenSSL::X509::Store] An SSL certificate store with the CA loaded.
+    #
+    # 1. Resolve the path to the file
+
+    # 2. Create the store
+    store = OpenSSL::X509::Store.new
+    store.set_default_paths # Load system default roots just in case
+
+    ca_file_path = get_ca_file(ca_trust)
+    if ca_file_path
+      # 3. Add the file. 
+      # .add_file() is the native OpenSSL C-wrapper.
+      # It automatically handles multiple certs (bundles) AND ignores comments/IPA headers.
+      begin
+        store.add_file(ca_file_path)
+      rescue OpenSSL::X509::StoreError => e
+        # This handles cases where the file path is unreadable or completely corrupt
+        raise Puppet::Error, "Failed to load CA file '#{ca_file_path}' into cert store: #{e.message}"
+    end
+
+    store
   end
 end
