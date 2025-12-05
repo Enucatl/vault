@@ -189,46 +189,60 @@ class VaultSession
     token
   end
 
-  def get_ca_file(ca_trust)
-    # @summary Try known paths for trusted CA certificates when not specified
-    # @param [String] :ca_trust The path to a trusted certificate authority file. If nil, some defaults are attempted.
-    # @return [String] The verified file path to a trusted certificate authority file.
-    ca_file = if ca_trust && File.exist?(ca_trust)
-                ca_trust
-              elsif File.exist?('/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem')
-                '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem'
-              elsif File.exist?('/etc/ssl/certs/ca-certificates.crt')
-                '/etc/ssl/certs/ca-certificates.crt'
-              else
-                nil
-              end
-    raise Puppet::Error, 'Failed to get the trusted CA certificate file.' if ca_file.nil?
-    ca_file
-  end
-
   def get_cert_store(ca_trust)
-    # @summary Initialize an X509 Store and load the trusted CA file
+    # @summary Initialize an X509 Store that robustly loads system bundles using Regex
     # @param [String] ca_trust The path to a trusted certificate authority file.
     # @return [OpenSSL::X509::Store] An SSL certificate store with the CA loaded.
-    #
-    # 1. Resolve the path to the file
-
-    # 2. Create the store
     store = OpenSSL::X509::Store.new
-    store.set_default_paths # Load system default roots just in case
+    store.set_default_paths
 
-    ca_file_path = get_ca_file(ca_trust)
-    if ca_file_path
-      # 3. Add the file. 
-      # .add_file() is the native OpenSSL C-wrapper.
-      # It automatically handles multiple certs (bundles) AND ignores comments/IPA headers.
+    # 1. Determine which files to load
+    #    We check custom args + standard OS locations
+    files_to_load = []
+    
+    # Custom file (if passed)
+    if ca_trust && File.exist?(ca_trust)
+      files_to_load << ca_trust
+    end
+
+    # System bundles
+    [
+      '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', # RHEL/CentOS
+      '/etc/ssl/certs/ca-certificates.crt',                # Debian/Ubuntu
+      '/etc/ssl/cert.pem'                                  # Alpine/General
+    ].each do |sys_file|
+      files_to_load << sys_file if File.exist?(sys_file)
+    end
+
+    # 2. Iterate over unique files and scan for certificates
+    # Track loaded subjects to prevent "Certificate already exists" errors
+    # from masking other issues or wasting cycles.
+    loaded_subjects = {}
+
+    files_to_load.uniq.each do |file_path|
       begin
-        store.add_file(ca_file_path)
-      rescue OpenSSL::X509::StoreError => e
-        # This handles cases where the file path is unreadable or completely corrupt
-        raise Puppet::Error, "Failed to load CA file '#{ca_file_path}' into cert store: #{e.message}"
+        content = File.read(file_path)
+        content.scan(/-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/m).each do |cert_pem|
+          begin
+            cert = OpenSSL::X509::Certificate.new(cert_pem)
+            subject_hash = cert.subject.hash # Use hash for fast lookup
+            
+            unless loaded_subjects[subject_hash]
+              store.add_cert(cert)
+              loaded_subjects[subject_hash] = true
+            end
+          rescue OpenSSL::X509::StoreError
+            # If we hit a collision despite our check (e.g. hash collision), ignore.
+          rescue OpenSSL::X509::CertificateError
+            # Bad cert, ignore.
+          end
+        end
+      rescue => e
+        Puppet.warning "VaultSession: Failed to read #{file_path}: #{e.message}"
+      end
     end
 
     store
   end
+
 end
