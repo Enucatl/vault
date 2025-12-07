@@ -203,16 +203,17 @@ class VaultSession
     # Custom file (if passed)
     if ca_trust && File.exist?(ca_trust)
       files_to_load << ca_trust
+    else
+      # System bundles
+      [
+        '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', # RHEL/CentOS
+        '/etc/ssl/certs/ca-certificates.crt',                # Debian/Ubuntu
+        '/etc/ssl/cert.pem'                                  # Alpine/General
+      ].each do |sys_file|
+          files_to_load << sys_file if File.exist?(sys_file)
+        end
     end
 
-    # System bundles
-    [
-      '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', # RHEL/CentOS
-      '/etc/ssl/certs/ca-certificates.crt',                # Debian/Ubuntu
-      '/etc/ssl/cert.pem'                                  # Alpine/General
-    ].each do |sys_file|
-      files_to_load << sys_file if File.exist?(sys_file)
-    end
 
     # 2. Iterate over unique files and scan for certificates
     # Track loaded subjects to prevent "Certificate already exists" errors
