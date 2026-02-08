@@ -190,52 +190,41 @@ class VaultSession
   end
 
   def get_cert_store(ca_trust)
-    # @summary Initialize an X509 Store that robustly loads system bundles using Regex
+    # @summary Initialize an X509 Store and load CA certificates for verification
     # @param [String] ca_trust The path to a trusted certificate authority file.
     # @return [OpenSSL::X509::Store] An SSL certificate store with the CA loaded.
     store = OpenSSL::X509::Store.new
-    store.set_default_paths
 
-    # 1. Determine which files to load
-    #    We check custom args + standard OS locations
     files_to_load = []
-    
-    # Custom file (if passed)
+
     if ca_trust && File.exist?(ca_trust)
       files_to_load << ca_trust
     else
-      # System bundles
       [
         '/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem', # RHEL/CentOS
         '/etc/ssl/certs/ca-certificates.crt',                # Debian/Ubuntu
         '/etc/ssl/cert.pem'                                  # Alpine/General
       ].each do |sys_file|
-          files_to_load << sys_file if File.exist?(sys_file)
-        end
+        files_to_load << sys_file if File.exist?(sys_file)
+      end
     end
 
-
-    # 2. Iterate over unique files and scan for certificates
-    # Track loaded subjects to prevent "Certificate already exists" errors
-    # from masking other issues or wasting cycles.
-    loaded_subjects = {}
+    # Fall back to OpenSSL defaults only when no bundle files were found
+    if files_to_load.empty?
+      store.set_default_paths
+      return store
+    end
 
     files_to_load.uniq.each do |file_path|
       begin
         content = File.read(file_path)
         content.scan(/-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----/m).each do |cert_pem|
           begin
-            cert = OpenSSL::X509::Certificate.new(cert_pem)
-            subject_hash = cert.subject.hash # Use hash for fast lookup
-            
-            unless loaded_subjects[subject_hash]
-              store.add_cert(cert)
-              loaded_subjects[subject_hash] = true
-            end
+            store.add_cert(OpenSSL::X509::Certificate.new(cert_pem))
           rescue OpenSSL::X509::StoreError
-            # If we hit a collision despite our check (e.g. hash collision), ignore.
+            # Duplicate cert, already in store.
           rescue OpenSSL::X509::CertificateError
-            # Bad cert, ignore.
+            # Malformed cert, skip.
           end
         end
       rescue => e
