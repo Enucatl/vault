@@ -28,6 +28,15 @@ describe VaultSession do
     end
   end
 
+  def server_tls_provider(name)
+    stub_const('Puppet::Server::HttpClient', Class.new)
+    provider = double('provider', name: name)
+    context = double('context', provider: provider)
+    ssl_context = double('SSLContext')
+    allow(ssl_context).to receive(:get_instance).with('TLS').and_return(context)
+    stub_const('Java::JavaxNetSsl::SSLContext', ssl_context)
+  end
+
   it 'loads certificates from a bundle containing comments' do
     with_bundle("# managed certificate bundle\n#{certificate.to_pem}") do |path|
       store = session.get_cert_store(path)
@@ -80,5 +89,96 @@ describe VaultSession do
     allow(File).to receive(:file?).with(debian_bundle).and_return(true)
 
     expect(session.get_ca_file(nil)).to eq debian_bundle
+  end
+
+  it 'allows TLS 1.3 while retaining a TLS 1.2 minimum and peer verification' do
+    with_bundle(certificate.to_pem) do |path|
+      client = described_class.new('uri' => 'https://vault.example/v1/kv/data/puppet',
+                                   'token' => 'test-token', 'ca_trust' => path)
+
+      expect(client.http.min_version).to eq OpenSSL::SSL::TLS1_2_VERSION
+      expect(client.http.max_version).to be_nil
+      expect(client.http.verify_mode).to eq OpenSSL::SSL::VERIFY_PEER
+    end
+  end
+
+  it 'loads a non-RSA client key for certificate authentication' do
+    key = OpenSSL::PKey::EC.generate('prime256v1')
+    with_bundle(certificate.to_pem) do |cert_path|
+      with_bundle(key.to_pem) do |key_path|
+        allow(Puppet.settings).to receive(:[]).with(:hostcert).and_return(cert_path)
+        allow(Puppet.settings).to receive(:[]).with(:hostprivkey).and_return(key_path)
+        session.http = Net::HTTP.new('vault.example', 8200)
+        allow(session).to receive(:post).with('/v1/auth/cert/login', { name: 'puppet-server' })
+          .and_return(Net::HTTPOK.new('1.1', '200', 'OK').tap do |response|
+            response.instance_variable_set(:@read, true)
+            response.body = '{"auth":{"client_token":"test-token"}}'
+          end)
+
+        expect(session.get_token('cert/', 'puppet-server')).to eq 'test-token'
+        expect(session.http.key).to be_a OpenSSL::PKey::EC
+      end
+    end
+  end
+
+  it 'checks Java-backed HTTP response status codes' do
+    session.fail_hard = true
+    response = double('server response', code: 403, body: '{"errors":["denied"]}')
+
+    expect { session.err_check(response) }.to raise_error(Puppet::Error, /403/)
+  end
+
+  [nil, false].each do |token|
+    it "keeps certificate authentication when token is #{token.inspect}" do
+      server_tls_provider('BCJSSE')
+      with_bundle(certificate.to_pem) do |path|
+        expect_any_instance_of(described_class).to receive(:configure_java_http).with(path, 5, false)
+        expect_any_instance_of(described_class).to receive(:get_token).with('cert', nil).and_return('client-token')
+
+        described_class.new('uri' => 'https://vault.example/v1/kv/data/puppet',
+                            'ca_trust' => path, 'auth_path' => 'cert', 'token' => token)
+      end
+    end
+  end
+
+  it 'preserves native proxy routing on the default server TLS provider' do
+    server_tls_provider('SunJSSE')
+    http = Net::HTTP::Proxy('proxy.example', 3128).new('vault.example', 443)
+    allow(Net::HTTP).to receive(:new).and_return(http)
+    expect_any_instance_of(described_class).not_to receive(:configure_java_http)
+
+    with_bundle(certificate.to_pem) do |path|
+      client = described_class.new('uri' => 'https://vault.example/v1/kv/data/puppet',
+                                   'token' => 'test-token', 'ca_trust' => path)
+      expect(client.http.proxy_address).to eq('proxy.example')
+      expect(client.http.proxy_port).to eq(3128)
+    end
+  end
+
+  it 'rejects unsupported proxy routing on BCJSSE instead of connecting directly' do
+    server_tls_provider('BCJSSE')
+    http = Net::HTTP::Proxy('proxy.example', 3128).new('vault.example', 443)
+    allow(Net::HTTP).to receive(:new).and_return(http)
+
+    with_bundle(certificate.to_pem) do |path|
+      expect {
+        described_class.new('uri' => 'https://vault.example/v1/kv/data/puppet',
+                            'token' => 'test-token', 'ca_trust' => path)
+      }.to raise_error(Puppet::Error, /HTTP proxy/)
+    end
+  end
+
+  it 'allows BCJSSE when no_proxy exempts the Vault host' do
+    server_tls_provider('BCJSSE')
+    allow(ENV).to receive(:[]).and_call_original
+    allow(ENV).to receive(:[]).with('http_proxy').and_return('http://proxy.example:3128')
+    allow(ENV).to receive(:[]).with('no_proxy').and_return('vault.example')
+
+    with_bundle(certificate.to_pem) do |path|
+      expect_any_instance_of(described_class).to receive(:configure_java_http).with(path, 5, true)
+      client = described_class.new('uri' => 'https://vault.example/v1/kv/data/puppet',
+                                   'token' => 'test-token', 'ca_trust' => path)
+      expect(client.http.proxy?).to be(false)
+    end
   end
 end

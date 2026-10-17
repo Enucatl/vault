@@ -4,6 +4,7 @@ require 'puppet'
 require 'uri'
 require 'openssl'
 require 'json'
+require 'net/http'
 
 # Class provides methods to interface with Hashicorp Vault
 class VaultSession
@@ -48,8 +49,17 @@ class VaultSession
                    nil
                  end
       http.use_ssl = true
-      http.ssl_version = :TLSv1_2
-      http.cert_store = get_cert_store(get_ca_file(ca_trust))
+      http.min_version = OpenSSL::SSL::TLS1_2_VERSION
+      ca_file = get_ca_file(ca_trust)
+      if defined?(Puppet::Server::HttpClient) && Java::JavaxNetSsl::SSLContext.get_instance('TLS').provider.name == 'BCJSSE'
+        # JRuby OpenSSL cannot represent ML-DSA keys; use the server's Java TLS stack.
+        # shortcut: Java HTTP has no proxy routing; add it before supporting proxied ML-DSA connections.
+        raise Puppet::Error, 'ML-DSA Vault connections through an HTTP proxy are not supported.' if http.proxy?
+
+        configure_java_http(ca_file, timeout, !!args['token'])
+      else
+        http.cert_store = get_cert_store(ca_file)
+      end
       http.verify_mode = OpenSSL::SSL::VERIFY_PEER
     elsif @uri.scheme == 'https'
       http.use_ssl = true
@@ -77,11 +87,11 @@ class VaultSession
     # @summary Consistent error handling for common failures
     # @param response An instance of Net::HTTPResponse
     # @return nil
-    if response.is_a?(Net::HTTPNotFound)
+    if response.code.to_i == 404
       err_message = "Vault path not found. (#{response.code} from #{@uri})"
       Puppet.debug append_api_errors(err_message, response)
       raise Puppet::Error, append_api_errors(err_message, response) if fail_hard
-    elsif !response.is_a?(Net::HTTPOK)
+    elsif response.code.to_i != 200
       err_message = "Vault request failed. (#{response.code}) from #{@uri})"
       Puppet.debug response.body
       Puppet.debug append_api_errors(err_message, response)
@@ -143,7 +153,7 @@ class VaultSession
     @headers.each do |key, value|
       request[key] = value
     end
-    response = http.request(request)
+    response = request_response(request)
     err_check(response)
     parse_response(response, version)
   end
@@ -166,7 +176,7 @@ class VaultSession
       request[key] = value
     end
     request.body = data.to_json
-    response = http.request(request)
+    response = request_response(request)
     err_check(response)
     response
   end
@@ -180,8 +190,10 @@ class VaultSession
     # Get the client certificate and private key files for Vault authenticaion
     hostcert = File.expand_path(Puppet.settings[:hostcert])
     hostprivkey = File.expand_path(Puppet.settings[:hostprivkey])
-    http.cert = OpenSSL::X509::Certificate.new(File.read(hostcert))
-    http.key = OpenSSL::PKey::RSA.new(File.read(hostprivkey))
+    unless @java_options
+      http.cert = OpenSSL::X509::Certificate.new(File.read(hostcert))
+      http.key = OpenSSL::PKey.read(File.read(hostprivkey))
+    end
 
     data = auth_name ? { name: auth_name } : nil
 
@@ -218,25 +230,66 @@ class VaultSession
     ca_file
   end
 
-  def get_cert_store(ca_bundle)
+  def get_ca_certs(ca_bundle)
     # @summary Load trusted CA certificates while tolerating bundle comments, duplicates, and malformed entries.
     # @param [String] ca_bundle The selected CA bundle path.
-    # @return [OpenSSL::X509::Store] A certificate store containing every valid certificate from the bundle.
+    # @return [Array<OpenSSL::X509::Certificate>] The valid certificates from the bundle.
     raise Puppet::Error, "Trusted CA certificate file does not exist: #{ca_bundle}" unless File.file?(ca_bundle)
 
-    store = OpenSSL::X509::Store.new
-    loaded = 0
-    File.read(ca_bundle).scan(%r{-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----}m).each do |pem|
-      store.add_cert(OpenSSL::X509::Certificate.new(pem))
-      loaded += 1
+    certs = File.read(ca_bundle).scan(%r{-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----}m).map do |pem|
+      OpenSSL::X509::Certificate.new(pem)
     rescue OpenSSL::X509::CertificateError => e
       Puppet.debug "Skipping malformed certificate in #{ca_bundle}: #{e.message}"
+      nil
+    end.compact
+
+    raise Puppet::Error, "No valid CA certificates found in: #{ca_bundle}" if certs.empty?
+
+    certs
+  end
+
+  def get_cert_store(ca_bundle)
+    store = OpenSSL::X509::Store.new
+    get_ca_certs(ca_bundle).each do |cert|
+      store.add_cert(cert)
     rescue OpenSSL::X509::StoreError
       # Duplicate certificates do not need to be added twice.
     end
-
-    raise Puppet::Error, "No valid CA certificates found in: #{ca_bundle}" if loaded.zero?
-
     store
+  end
+
+  def configure_java_http(ca_file, timeout, token_auth)
+    ssl_utils = Java::com.puppetlabs.ssl_utils.SSLUtils
+    ca_reader = java.io.StringReader.new(get_ca_certs(ca_file).map(&:to_pem).join)
+    context = if token_auth
+                ssl_utils.ca_cert_pem_to_ssl_context(ca_reader)
+              else
+                ssl_utils.pems_to_ssl_context(
+                  java.io.StringReader.new(File.read(Puppet[:hostcert])),
+                  java.io.StringReader.new(File.read(Puppet[:hostprivkey])), ca_reader
+                )
+              end
+    @java_options = Java::ComPuppetlabsHttpClient::ClientOptions.new
+    @java_options.set_ssl_context(context)
+    @java_options.set_connect_timeout_milliseconds(timeout * 1000)
+    @java_options.set_socket_timeout_milliseconds(timeout * 1000)
+    @java_options.set_enable_url_metrics(false)
+    @java_options.set_follow_redirects(false)
+  end
+
+  def request_response(request)
+    return http.request(request) unless @java_options
+
+    options = Java::ComPuppetlabsHttpClient::RequestOptions.new("#{@uri.scheme}://#{@uri.host}:#{@uri.port}#{request.path}")
+    options.set_headers(request.each_header.to_h)
+    options.set_as(Java::ComPuppetlabsHttpClient::ResponseBodyType::TEXT)
+    options.set_body(request.body) if request.body
+    client = Java::ComPuppetlabsHttpClient::Sync.create_client(@java_options)
+    begin
+      response = request.method == 'GET' ? client.get(options) : client.post(options)
+      Puppet::Server::HttpResponse.new(response, @uri)
+    ensure
+      client.close
+    end
   end
 end
