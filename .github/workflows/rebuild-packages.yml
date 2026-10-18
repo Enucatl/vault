@@ -1,0 +1,18 @@
+name: Rebuild coordinated packages
+
+on:
+  push:
+    branches: [feature/mldsa44]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  rebuild:
+    if: github.repository_owner == 'Enucatl'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Request a coordinated build
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGES_DISPATCH_TOKEN }}
+        run: gh workflow run packages.yml --repo Enucatl/openvox-packages --ref main
