@@ -271,6 +271,8 @@ class VaultSession
               end
     @java_options = Java::ComPuppetlabsHttpClient::ClientOptions.new
     @java_options.set_ssl_context(context)
+    protocols = Puppet::Server::HttpClient.settings['ssl_protocols']
+    @java_options.set_ssl_protocols(protocols) if protocols
     @java_options.set_connect_timeout_milliseconds(timeout * 1000)
     @java_options.set_socket_timeout_milliseconds(timeout * 1000)
     @java_options.set_enable_url_metrics(false)
