@@ -34,13 +34,16 @@ and request a Vault certificate from a configured role on a PKI secrets engine.
 ## Setup
 
 ML-DSA-44 identities require native Ruby OpenSSL 4 with OpenSSL 3.5, or an
-OpenVox Server configured to use BCJSSE as its default TLS provider. On that
-server configuration, this module uses the existing Java HTTP client and the
-selected CA trust bundle. HTTP proxies are not supported by that Java client;
-the module rejects proxied BCJSSE connections. Other server configurations
-keep the native HTTP transport and its proxy routing.
+OpenVox Server with the ML-DSA-enabled JRuby OpenSSL fork from
+[jruby-openssl PR #389](https://github.com/jruby/jruby-openssl/pull/389).
+The coordinated OpenVox packages include that gem. JRuby mutual TLS requires
+BCJSSE 1.82 or later configured as the default TLS provider, with ML-DSA signature
+schemes enabled before startup, as supplied by the coordinated server image.
+All runtimes use Net::HTTP with the selected CA trust bundle and standard proxy
+routing. Server `ssl_protocols` settings must describe a contiguous TLS version
+range; unsupported or disjoint sets are rejected.
 
-The module does not require any extra ruby gems on the Puppet server or agents.  Obviously you need to have a working
+With the runtime dependencies above installed, the module requires no additional Ruby gems. You need a working
 Hashicorp Vault deployment first.  The following describes a basic Vault configuration to support puppet integration.
 
 Complete the following steps on the Vault server:

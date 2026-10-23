@@ -51,14 +51,17 @@ class VaultSession
       http.use_ssl = true
       http.min_version = OpenSSL::SSL::TLS1_2_VERSION
       ca_file = get_ca_file(ca_trust)
-      if defined?(Puppet::Server::HttpClient) && Java::JavaxNetSsl::SSLContext.get_instance('TLS').provider.name == 'BCJSSE'
-        # JRuby OpenSSL cannot represent ML-DSA keys; use the server's Java TLS stack.
-        # shortcut: Java HTTP has no proxy routing; add it before supporting proxied ML-DSA connections.
-        raise Puppet::Error, 'ML-DSA Vault connections through an HTTP proxy are not supported.' if http.proxy?
-
-        configure_java_http(ca_file, timeout, !!args['token'])
-      else
-        http.cert_store = get_cert_store(ca_file)
+      http.cert_store = get_cert_store(ca_file)
+      if defined?(Puppet::Server::HttpClient) && (protocols = Puppet::Server::HttpClient.settings['ssl_protocols'])
+        versions = { 'TLSv1' => OpenSSL::SSL::TLS1_VERSION, 'TLSv1.1' => OpenSSL::SSL::TLS1_1_VERSION,
+                     'TLSv1.2' => OpenSSL::SSL::TLS1_2_VERSION, 'TLSv1.3' => OpenSSL::SSL::TLS1_3_VERSION }
+        selected = protocols.to_a.map do |protocol|
+          versions.fetch(protocol) { raise Puppet::Error, "Unsupported server TLS protocol: #{protocol}" }
+        end.uniq.sort
+        if selected.empty? || selected != (selected.first..selected.last).to_a
+          raise Puppet::Error, 'Vault requires a contiguous server TLS protocol range.'
+        end
+        http.min_version, http.max_version = selected.first, selected.last
       end
       http.verify_mode = OpenSSL::SSL::VERIFY_PEER
     elsif @uri.scheme == 'https'
@@ -153,7 +156,7 @@ class VaultSession
     @headers.each do |key, value|
       request[key] = value
     end
-    response = request_response(request)
+    response = http.request(request)
     err_check(response)
     parse_response(response, version)
   end
@@ -176,7 +179,7 @@ class VaultSession
       request[key] = value
     end
     request.body = data.to_json
-    response = request_response(request)
+    response = http.request(request)
     err_check(response)
     response
   end
@@ -190,10 +193,8 @@ class VaultSession
     # Get the client certificate and private key files for Vault authenticaion
     hostcert = File.expand_path(Puppet.settings[:hostcert])
     hostprivkey = File.expand_path(Puppet.settings[:hostprivkey])
-    unless @java_options
-      http.cert = OpenSSL::X509::Certificate.new(File.read(hostcert))
-      http.key = OpenSSL::PKey.read(File.read(hostprivkey))
-    end
+    http.cert = OpenSSL::X509::Certificate.new(File.read(hostcert))
+    http.key = OpenSSL::PKey.read(File.read(hostprivkey))
 
     data = auth_name ? { name: auth_name } : nil
 
@@ -256,42 +257,5 @@ class VaultSession
       # Duplicate certificates do not need to be added twice.
     end
     store
-  end
-
-  def configure_java_http(ca_file, timeout, token_auth)
-    ssl_utils = Java::com.puppetlabs.ssl_utils.SSLUtils
-    ca_reader = java.io.StringReader.new(get_ca_certs(ca_file).map(&:to_pem).join)
-    context = if token_auth
-                ssl_utils.ca_cert_pem_to_ssl_context(ca_reader)
-              else
-                ssl_utils.pems_to_ssl_context(
-                  java.io.StringReader.new(File.read(Puppet[:hostcert])),
-                  java.io.StringReader.new(File.read(Puppet[:hostprivkey])), ca_reader
-                )
-              end
-    @java_options = Java::ComPuppetlabsHttpClient::ClientOptions.new
-    @java_options.set_ssl_context(context)
-    protocols = Puppet::Server::HttpClient.settings['ssl_protocols']
-    @java_options.set_ssl_protocols(protocols) if protocols
-    @java_options.set_connect_timeout_milliseconds(timeout * 1000)
-    @java_options.set_socket_timeout_milliseconds(timeout * 1000)
-    @java_options.set_enable_url_metrics(false)
-    @java_options.set_follow_redirects(false)
-  end
-
-  def request_response(request)
-    return http.request(request) unless @java_options
-
-    options = Java::ComPuppetlabsHttpClient::RequestOptions.new("#{@uri.scheme}://#{@uri.host}:#{@uri.port}#{request.path}")
-    options.set_headers(request.each_header.to_h)
-    options.set_as(Java::ComPuppetlabsHttpClient::ResponseBodyType::TEXT)
-    options.set_body(request.body) if request.body
-    client = Java::ComPuppetlabsHttpClient::Sync.create_client(@java_options)
-    begin
-      response = request.method == 'GET' ? client.get(options) : client.post(options)
-      Puppet::Server::HttpResponse.new(response, @uri)
-    ensure
-      client.close
-    end
   end
 end
