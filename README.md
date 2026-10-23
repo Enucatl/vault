@@ -40,8 +40,7 @@ The coordinated OpenVox packages include that gem. JRuby mutual TLS requires
 BCJSSE 1.82 or later configured as the default TLS provider, with ML-DSA signature
 schemes enabled before startup, as supplied by the coordinated server image.
 All runtimes use Net::HTTP with the selected CA trust bundle and standard proxy
-routing. Server `ssl_protocols` settings must describe a contiguous TLS version
-range; unsupported or disjoint sets are rejected.
+routing, negotiating TLS 1.2 or newer with the Vault endpoint.
 
 With the runtime dependencies above installed, the module requires no additional Ruby gems. You need a working
 Hashicorp Vault deployment first.  The following describes a basic Vault configuration to support puppet integration.

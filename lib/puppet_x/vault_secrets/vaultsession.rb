@@ -52,17 +52,6 @@ class VaultSession
       http.min_version = OpenSSL::SSL::TLS1_2_VERSION
       ca_file = get_ca_file(ca_trust)
       http.cert_store = get_cert_store(ca_file)
-      if defined?(Puppet::Server::HttpClient) && (protocols = Puppet::Server::HttpClient.settings['ssl_protocols'])
-        versions = { 'TLSv1' => OpenSSL::SSL::TLS1_VERSION, 'TLSv1.1' => OpenSSL::SSL::TLS1_1_VERSION,
-                     'TLSv1.2' => OpenSSL::SSL::TLS1_2_VERSION, 'TLSv1.3' => OpenSSL::SSL::TLS1_3_VERSION }
-        selected = protocols.to_a.map do |protocol|
-          versions.fetch(protocol) { raise Puppet::Error, "Unsupported server TLS protocol: #{protocol}" }
-        end.uniq.sort
-        if selected.empty? || selected != (selected.first..selected.last).to_a
-          raise Puppet::Error, 'Vault requires a contiguous server TLS protocol range.'
-        end
-        http.min_version, http.max_version = selected.first, selected.last
-      end
       http.verify_mode = OpenSSL::SSL::VERIFY_PEER
     elsif @uri.scheme == 'https'
       http.use_ssl = true

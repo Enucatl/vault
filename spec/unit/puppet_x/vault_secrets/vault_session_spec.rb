@@ -112,28 +112,12 @@ describe VaultSession do
     end
   end
 
-  it 'preserves a server TLS 1.3-only policy and configured timeouts' do
-    stub_const('Puppet::Server::HttpClient', Class.new)
-    allow(Puppet::Server::HttpClient).to receive(:settings).and_return('ssl_protocols' => ['TLSv1.3'])
+  it 'preserves configured timeouts' do
     with_bundle(certificate.to_pem) do |path|
       client = described_class.new('uri' => 'https://vault.example', 'token' => 'test-token', 'ca_trust' => path, 'timeout' => 7)
 
-      expect(client.http.min_version).to eq OpenSSL::SSL::TLS1_3_VERSION
-      expect(client.http.max_version).to eq OpenSSL::SSL::TLS1_3_VERSION
       expect(client.http.open_timeout).to eq 7
       expect(client.http.read_timeout).to eq 7
-    end
-  end
-
-  [['TLSv1', 'TLSv1.3'], ['SSLv3'], []].each do |protocols|
-    it "rejects unsupported server TLS policy #{protocols.inspect}" do
-      stub_const('Puppet::Server::HttpClient', Class.new)
-      allow(Puppet::Server::HttpClient).to receive(:settings).and_return('ssl_protocols' => protocols)
-      with_bundle(certificate.to_pem) do |path|
-        expect {
-          described_class.new('uri' => 'https://vault.example', 'token' => 'test-token', 'ca_trust' => path)
-        }.to raise_error(Puppet::Error, /server TLS protocol/)
-      end
     end
   end
 
